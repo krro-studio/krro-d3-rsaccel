@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]          # 必须，JVM 只能 dlopen cdylib
-name = "krro-d3-rsaccel"               # 决定产物名：libkrro-d3-rsaccel.so / krro-d3-rsaccel.dll
+crate-type = ["cdylib"]
+name = "krro_d3_rsaccel"          # 库名不能有连字符，改下划线
 
 [dependencies]
 jni = "0.21"
 
 [profile.release]
-panic = "unwind"                 # 后续 catch_unwind 必需
+panic = "unwind"
 opt-level = 3
 lto = true

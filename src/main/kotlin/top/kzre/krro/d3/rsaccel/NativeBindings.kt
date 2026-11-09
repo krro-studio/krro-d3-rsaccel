@@ -12,7 +12,7 @@ import java.nio.ByteBuffer
  */
 internal object NativeBindings {
     init {
-        org.questdb.JarJni.load("krro-d3-rsaccel")
+        NativeLibLoader.load("krro_d3_rsaccel")
     }
 
     @JvmStatic external fun hello(): Int

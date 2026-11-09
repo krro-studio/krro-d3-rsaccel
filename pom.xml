@@ -4,42 +4,101 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-
     <groupId>top.kzre</groupId>
     <artifactId>krro-d3-rsaccel</artifactId>
     <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <kotlin.code.style>official</kotlin.code.style>
         <kotlin.compiler.jvmTarget>1.8</kotlin.compiler.jvmTarget>
+        <kotlin.version>1.9.24</kotlin.version>
+
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <kotlin.version>1.9.24</kotlin.version>
+
         <junit.version>5.10.0</junit.version>
         <jar-jni.version>1.1.1</jar-jni.version>
+
+        <!-- JNA 风格平台目录，profile 未命中时 fallback "native" -->
+        <native.platform.dir>native</native.platform.dir>
+
+        <!-- Rust 构建产物根：内含 {platform}/{libname}.dll|so|dylib -->
+        <rust.staging.root>${project.build.directory}/rust-native</rust.staging.root>
     </properties>
 
-    <repositories>
-        <repository>
-            <id>mavenCentral</id>
-            <url>https://repo1.maven.org/maven2/</url>
-        </repository>
-    </repositories>
-
-
+    <!-- ============================================================
+         平台探测（JNA 命名）：win32-x86-64 / linux-x86-64 / darwin-aarch64 ...
+         构建机命中哪个 profile，native.platform.dir 就是哪个。
+         下游用户依赖时也用同一套命名指定 classifier。
+         ============================================================ -->
+    <profiles>
+        <profile>
+            <id>native-linux-x86-64</id>
+            <activation><os><name>Linux</name><arch>amd64</arch></os></activation>
+            <properties><native.platform.dir>linux-x86-64</native.platform.dir></properties>
+        </profile>
+        <profile>
+            <id>native-linux-aarch64</id>
+            <activation><os><name>Linux</name><arch>aarch64</arch></os></activation>
+            <properties><native.platform.dir>linux-aarch64</native.platform.dir></properties>
+        </profile>
+        <profile>
+            <id>native-darwin-x86-64</id>
+            <activation><os><name>Mac OS X</name><arch>x86_64</arch></os></activation>
+            <properties><native.platform.dir>darwin-x86-64</native.platform.dir></properties>
+        </profile>
+        <profile>
+            <id>native-darwin-aarch64</id>
+            <activation><os><name>Mac OS X</name><arch>aarch64</arch></os></activation>
+            <properties><native.platform.dir>darwin-aarch64</native.platform.dir></properties>
+        </profile>
+        <profile>
+            <id>native-win32-x86-64-amd64</id>
+            <activation><os><family>Windows</family><arch>amd64</arch></os></activation>
+            <properties><native.platform.dir>win32-x86-64</native.platform.dir></properties>
+        </profile>
+        <profile>
+            <id>native-win32-x86-64-x86_64</id>
+            <activation><os><family>Windows</family><arch>x86_64</arch></os></activation>
+            <properties><native.platform.dir>win32-x86-64</native.platform.dir></properties>
+        </profile>
+    </profiles>
 
     <build>
         <sourceDirectory>src/main/kotlin</sourceDirectory>
         <testSourceDirectory>src/test/kotlin</testSourceDirectory>
 
+        <!-- src/main/resources 中的 rust 源文件排除 -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>**/*.rs</exclude>
+                    <exclude>**/Cargo.toml</exclude>
+                    <exclude>**/Cargo.lock</exclude>
+                    <exclude>**/*.d</exclude>
+                    <exclude>**/*.pdb</exclude>
+                    <exclude>**/*.exp</exclude>
+                    <exclude>**/*.lib</exclude>
+                </excludes>
+            </resource>
+        </resources>
+
         <plugins>
-            <!-- Kotlin 编译；extensions=true 会接管默认的 maven-compiler-plugin -->
+
+            <!-- =========================================================
+                 1. Kotlin 编译
+                 ========================================================= -->
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>
                 <version>${kotlin.version}</version>
                 <extensions>true</extensions>
+                <configuration>
+                    <jvmTarget>1.8</jvmTarget>
+                </configuration>
                 <executions>
                     <execution>
                         <id>compile</id>
@@ -54,7 +113,10 @@
                 </executions>
             </plugin>
 
-            <!-- Rust 构建：产物拷到 target/classes/native，供 jar-jni 加载 -->
+            <!-- =========================================================
+                 2. Rust 构建
+                 产物：target/rust-native/{platform}/krro_d3_rsaccel.dll|so|dylib
+                 ========================================================= -->
             <plugin>
                 <groupId>org.questdb</groupId>
                 <artifactId>rust-maven-plugin</artifactId>
@@ -62,18 +124,91 @@
                 <executions>
                     <execution>
                         <id>rust-build</id>
-                        <phase>generate-resources</phase>   <!-- 显式绑定：在 process-resources 之前完成 -->
+                        <phase>generate-resources</phase>
                         <goals><goal>build</goal></goals>
                         <configuration>
                             <path>rust</path>
-                            <copyTo>${project.build.directory}/classes/native</copyTo>
+                            <copyTo>${rust.staging.root}/${native.platform.dir}</copyTo>
                             <release>true</release>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- 测试：JUnit 5 需要 surefire 3.x，2.22.2 有已知缺陷 -->
+            <!-- =========================================================
+                 3. 开发期把 native 库拷进 target/classes/{platform}/
+                    用途：mvn exec:java、mvn test 时能加载到库
+                    注意：主 JAR 打包时会排除该子目录（见下方 jar-plugin）
+                 ========================================================= -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-native-for-dev</id>
+                        <phase>process-resources</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/${native.platform.dir}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${rust.staging.root}/${native.platform.dir}</directory>
+                                    <includes>
+                                        <include>*.dll</include>
+                                        <include>*.so</include>
+                                        <include>*.dylib</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- =========================================================
+                 4. 双 JAR 打包
+                 - default-jar：主 JAR，只含 Kotlin 字节码（排除 native 目录）
+                 - native-jar ：平台 JAR，classifier={platform}，只含 {platform}/*.dll
+                 ========================================================= -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>default-jar</id>
+                        <configuration>
+                            <excludes>
+                                <exclude>${native.platform.dir}/**</exclude>
+                                <exclude>**/*.rs</exclude>
+                                <exclude>**/Cargo.toml</exclude>
+                                <exclude>**/Cargo.lock</exclude>
+                                <exclude>**/*.d</exclude>
+                                <exclude>**/*.pdb</exclude>
+                                <exclude>**/*.exp</exclude>
+                                <exclude>**/*.lib</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>native-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>jar</goal></goals>
+                        <configuration>
+                            <classifier>${native.platform.dir}</classifier>
+                            <classesDirectory>${rust.staging.root}</classesDirectory>
+                            <includes>
+                                <include>${native.platform.dir}/**</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- =========================================================
+                 5. 测试
+                 ========================================================= -->
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
@@ -81,13 +216,14 @@
                     <useModulePath>false</useModulePath>
                 </configuration>
             </plugin>
-
             <plugin>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
 
-            <!-- 直接运行 Main；mainClass 必须是完整类名（Kotlin 顶层函数 → <文件名>Kt） -->
+            <!-- =========================================================
+                 6. mvn exec:java
+                 ========================================================= -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -96,14 +232,7 @@
                     <mainClass>top.kzre.krro.d3.rsaccel.MainKt</mainClass>
                 </configuration>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <source>7</source>
-                    <target>7</target>
-                </configuration>
-            </plugin>
+
         </plugins>
     </build>
 
@@ -113,14 +242,11 @@
             <artifactId>kotlin-stdlib</artifactId>
             <version>${kotlin.version}</version>
         </dependency>
-
-        <!-- 从 JAR 内加载 native 库，解决 java.library.path 分发问题 -->
         <dependency>
             <groupId>org.questdb</groupId>
             <artifactId>jar-jni</artifactId>
             <version>${jar-jni.version}</version>
         </dependency>
-
         <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-test-junit5</artifactId>
@@ -134,5 +260,4 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
-
 </project>
